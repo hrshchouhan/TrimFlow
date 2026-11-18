@@ -448,21 +448,21 @@ PassReport RunOptimizationPass(bool statusOnly, bool forceTrimVisible) {
         ULONGLONG delta = pidDeltas[sp.pid];
         bool isForegroundWindowProc = (sp.pid == winState.fgPid);
         bool isForegroundApp = (sp.name == fgExeName);
-        bool ownsVisibleWindow = protectVis && (winState.visiblePids.count(sp.pid) != 0);
 
         // Protection policy:
-        // 1. Audio & Network subprocesses are NEVER throttled or trimmed.
-        // 2. The foreground window process itself is NEVER trimmed.
-        // 3. For the foreground app, its GPU compositor and its #1 active renderer tab stay protected.
-        // 4. For non-foreground apps, only a visible main UI window (when protectVis is on) or heavily
-        //    active worker (> 15% single-core CPU, e.g. active compilation/render) is protected; all
-        //    idle/heartbeat utility & renderer subprocesses (like background VS Code extension hosts) are compressed!
+        // 1. Audio & Network services (audio.mojom.AudioService / network.mojom.NetworkService) are NEVER throttled.
+        // 2. For the currently focused foreground application (isForegroundApp):
+        //    - Protect its main UI window process, its GPU compositor, and its #1 active renderer tab.
+        // 3. For any application in the background (behind the active window or minimized):
+        //    - Compress and enable Efficiency Mode (EcoQoS) across the entire app group (unless a subprocess is
+        //      actively compiling/rendering at > 20% single-core CPU), so Task Manager shows Efficiency Mode
+        //      and reclaims maximum RAM! When you click/Alt-Tab back to that app, WinEventProc promotes it in < 1 ms.
         bool protectedProc = (sp.role == SubprocRole::AudioOrNetwork) ||
                              isForegroundWindowProc ||
+                             (isForegroundApp && sp.role == SubprocRole::MainOrStandalone) ||
                              (isForegroundApp && sp.role == SubprocRole::GpuCompositor) ||
                              (isForegroundApp && sp.pid == topForegroundRendererPid) ||
-                             (ownsVisibleWindow && sp.role == SubprocRole::MainOrStandalone) ||
-                             (!forceTrimVisible && delta > 1500000ULL);  // > 15% of a core = real background job
+                             (!forceTrimVisible && delta > 2000000ULL);
 
         ProcHistory& hist = g_procHistory[sp.pid];
         if (protectedProc) {
@@ -514,9 +514,20 @@ PassReport RunOptimizationPass(bool statusOnly, bool forceTrimVisible) {
     return rep;
 }
 
-// Instant un-throttle when the user switches to or restores a window
+// Instant un-throttle of the entire process group when the user switches to or restores a window
 void PromoteProcessTreeImmediate(DWORD fgPid) {
     if (!fgPid) return;
+    HANDLE hFg = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, fgPid);
+    std::wstring fgName;
+    if (hFg) {
+        wchar_t path[MAX_PATH] = {};
+        DWORD sz = MAX_PATH;
+        if (QueryFullProcessImageNameW(hFg, 0, path, &sz)) {
+            const wchar_t* base = wcsrchr(path, L'\\');
+            fgName = Lower(base ? base + 1 : path);
+        }
+        CloseHandle(hFg);
+    }
     AcquireSRWLockExclusive(&g_histLock);
     auto it = g_procHistory.find(fgPid);
     if (it != g_procHistory.end() && it->second.throttled) {

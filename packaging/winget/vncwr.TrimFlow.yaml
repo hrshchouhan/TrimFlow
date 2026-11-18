@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
+PackageIdentifier: vncwr.TrimFlow
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: vncwr
+PublisherUrl: https://github.com/vncwr
+PackageName: TrimFlow
+PackageUrl: https://github.com/vncwr/TrimFlow
+License: MIT
+LicenseUrl: https://github.com/vncwr/TrimFlow/blob/main/LICENSE
+ShortDescription: Context-aware C++17/Win32 subprocess memory and EcoQoS optimizer for Windows 10/11 (~80 KB RAM).
+Description: >-
+  TrimFlow dynamically discovers multi-process desktop applications in your Windows session
+  (browsers, Electron/CEF/WebView2 apps, IDEs like VS Code, and media clients) and reclaims idle
+  physical RAM while protecting foreground UI, GPU compositors, and audio/network services.
+Moniker: trimflow
+Tags:
+  - windows
+  - memory-management
+  - ram-optimizer
+  - eco-qos
+  - tray-app
+  - cpp
+Installers:
+  - Architecture: x64
+    InstallerType: portable
+    InstallerUrl: https://github.com/vncwr/TrimFlow/releases/download/v1.0.0/TrimFlow.exe
+    InstallerSha256: F5D75FC23769C96B172912E6E1ED9BB0FF25D5B061C820537EFC01A0C7690025
+    Commands:
+      - trimflow
+ManifestType: singleton
+ManifestVersion: 1.6.0

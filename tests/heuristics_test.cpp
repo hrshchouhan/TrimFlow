@@ -1,8 +1,9 @@
-// Unit and behavioral test suite for TrimFlow heuristics & subprocess classification.
+// Unit and behavioral benchmark scenario test suite for TrimFlow heuristics & subprocess classification.
 #include "../src/heuristics.h"
 
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 namespace {
 
@@ -85,6 +86,31 @@ void TestSubprocessRoleClassification() {
               SubprocRole::RendererOrWorker);
 }
 
+void TestElectronNetworkServiceSandboxRegression() {
+    using trimflow::ClassifyCommandLine;
+    using trimflow::SubprocRole;
+
+    // Regression test: Electron / VS Code passes `--disable-features=...,NetworkServiceSandbox` to every renderer
+    // and extension host. It must NOT be misclassified as AudioOrNetwork unless `network.mojom.networkservice` is present.
+    const wchar_t* vscodeRendererCmd =
+        L"\"C:\\Users\\user\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe\" "
+        L"--type=renderer --disable-features=CalculateNativeWinOcclusion,NetworkServiceSandbox "
+        L"--vscode-window-config=vscode:1234";
+    EXPECT_EQ(ClassifyCommandLine(vscodeRendererCmd, 13), SubprocRole::RendererOrWorker);
+
+    const wchar_t* vscodeExtHostCmd =
+        L"\"C:\\Users\\user\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe\" "
+        L"--type=utility --utility-sub-type=node.mojom.NodeService "
+        L"--disable-features=CalculateNativeWinOcclusion,NetworkServiceSandbox";
+    EXPECT_EQ(ClassifyCommandLine(vscodeExtHostCmd, 13), SubprocRole::RendererOrWorker);
+
+    const wchar_t* vscodeRealNetServiceCmd =
+        L"\"C:\\Users\\user\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe\" "
+        L"--type=utility --utility-sub-type=network.mojom.NetworkService "
+        L"--disable-features=CalculateNativeWinOcclusion,NetworkServiceSandbox";
+    EXPECT_EQ(ClassifyCommandLine(vscodeRealNetServiceCmd, 13), SubprocRole::AudioOrNetwork);
+}
+
 void TestDynamicGroupQualification() {
     using trimflow::ShouldQualifyGroup;
     constexpr SIZE_T MB = 1024ULL * 1024ULL;
@@ -136,15 +162,67 @@ void TestCpuDeltaThreshold() {
     EXPECT_TRUE(IsCpuActiveDelta(500000, 800000));
 }
 
+// Converts benchmark claims into deterministic table-driven scenario tests so contributors
+// can verify application-level policies without modifying Win32 process enumeration code.
+void TestBenchmarkScenarios() {
+    using trimflow::ClassifyCommandLine;
+    using trimflow::ShouldKeepSubprocessHot;
+    using trimflow::SubprocRole;
+
+    struct SimulatedProc {
+        const wchar_t* cmdLine;
+        bool isCpuActive;
+        bool isPrimaryRenderer;
+        bool expectHotWhenForeground;
+        bool expectHotWhenBackground;
+    };
+
+    // Scenario 1: VS Code (code.exe) 6-representative-process tree
+    const SimulatedProc vscodeTree[] = {
+        // Main Electron host process
+        {L"\"Code.exe\"", false, false, true, false},
+        // GPU process
+        {L"\"Code.exe\" --type=gpu-process --disable-features=NetworkServiceSandbox", false, false, true, false},
+        // Real NetworkService
+        {L"\"Code.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService", false, false, true, true},
+        // Primary active window renderer
+        {L"\"Code.exe\" --type=renderer --disable-features=NetworkServiceSandbox", false, true, true, false},
+        // Idle background window renderer
+        {L"\"Code.exe\" --type=renderer --disable-features=NetworkServiceSandbox", false, false, false, false},
+        // Extension host utility worker (idle)
+        {L"\"Code.exe\" --type=utility --utility-sub-type=node.mojom.NodeService --disable-features=NetworkServiceSandbox", false, false, false, false},
+    };
+
+    for (const auto& p : vscodeTree) {
+        SubprocRole role = ClassifyCommandLine(p.cmdLine, 13);
+        EXPECT_EQ(ShouldKeepSubprocessHot(role, /*isForegroundApp=*/true, p.isCpuActive, p.isPrimaryRenderer),
+                  p.expectHotWhenForeground);
+        EXPECT_EQ(ShouldKeepSubprocessHot(role, /*isForegroundApp=*/false, p.isCpuActive, p.isPrimaryRenderer),
+                  p.expectHotWhenBackground);
+    }
+
+    // Scenario 2: Spotify playing audio in the background
+    // AudioService and NetworkService must remain hot even when Spotify is minimized/backgrounded,
+    // while Chromium UI and idle renderer helpers are trimmed.
+    SubprocRole spotifyAudio = ClassifyCommandLine(
+        L"\"Spotify.exe\" --type=utility --utility-sub-type=audio.mojom.AudioService", 7);
+    SubprocRole spotifyRenderer = ClassifyCommandLine(
+        L"\"Spotify.exe\" --type=renderer --lang=en", 7);
+    EXPECT_TRUE(ShouldKeepSubprocessHot(spotifyAudio, /*isForegroundApp=*/false, /*isCpuActive=*/false, false));
+    EXPECT_FALSE(ShouldKeepSubprocessHot(spotifyRenderer, /*isForegroundApp=*/false, /*isCpuActive=*/false, false));
+}
+
 }  // namespace
 
 int main() {
-    printf("Running TrimFlow unit tests...\n");
+    printf("Running TrimFlow unit & benchmark scenario tests...\n");
     TestSystemAndAntiCheatProtection();
     TestSubprocessRoleClassification();
+    TestElectronNetworkServiceSandboxRegression();
     TestDynamicGroupQualification();
     TestAntiThrashingHysteresis();
     TestCpuDeltaThreshold();
+    TestBenchmarkScenarios();
 
     printf("Results: %d passed, %d failed.\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;

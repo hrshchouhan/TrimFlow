@@ -2,94 +2,117 @@
 
 **Context-Aware Subprocess Memory & EcoQoS Optimizer for Windows 10/11**
 
-`TrimFlow` is an ultra-lightweight (~80 KB RAM footprint, zero external dependencies) native C++17/Win32 system tray and CLI utility that **dynamically discovers** multi-process and memory-heavy desktop applications running in the user's Windows session—including any browser, Electron/CEF/WebView2 app, IDE, background updater, or media client—and reclaims idle physical memory without inducing page-fault stutters in active user workflows or games.
+[![CI Build & Tests](https://github.com/vncwr/TrimFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/vncwr/TrimFlow/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg)](LICENSE)
+[![Footprint: ~80 KB RAM](https://img.shields.io/badge/RAM_Footprint-~80_KB-06b6d4.svg)](#3-real-world-benchmark)
+[![Platform: Windows 10/11 x64](https://img.shields.io/badge/Platform-Windows_10%2F11_x64-blue.svg)](https://github.com/vncwr/TrimFlow/releases)
+
+`TrimFlow` is an ultra-lightweight (`~80 KB` Private Working Set, zero external dependencies) native C++17/Win32 system tray and CLI utility that **dynamically discovers** multi-process and memory-heavy desktop applications running in your Windows session—including browsers, Electron/CEF/WebView2 apps, IDEs (`VS Code`, `Cursor`, `Antigravity`), and media clients (`Spotify`, `Discord`)—and reclaims gigabytes of idle physical memory without inducing page-fault stutters in your active window or audio streams.
+
+![TrimFlow Demo — Before & After Memory Reclamation and Tray UI](docs/demo.gif)
 
 ---
 
-## 1. Why?
+## 1. Install in One Command
 
-Modern desktop and web applications rely on multi-process architectures (such as Chromium's site-isolation model and Electron's helper hierarchy) that spawn 15 to 60+ OS subprocesses per application. Even when background tabs, extension workers, or minimized launcher windows (`steamwebhelper.exe`, `Spotify.exe`, `Discord.exe`) are completely idle, their V8 heaps and uncommitted page tables remain pinned in the active physical Working Set—often consuming **2 GB to 4+ GB of physical RAM**.
+### Option A: Scoop (One Command)
+```powershell
+scoop install https://raw.githubusercontent.com/vncwr/TrimFlow/main/packaging/scoop/trimflow.json
+```
 
-Conventional "RAM cleaner" utilities blindly invoke `EmptyWorkingSet` across **every** process on the system simultaneously, including the foreground game, active browser compositor, and audio playback threads. This forces the Windows Virtual Memory Manager (VMM) to immediately fault active pages back from disk or standby lists, causing micro-stutters and frame-time spikes.
+### Option B: WinGet (Local Manifest or Community Repository)
+```powershell
+winget install --manifest packaging\winget\vncwr.TrimFlow.yaml
+```
+
+### Option C: Portable Binary (`.exe` / `.zip`)
+Download `TrimFlow.exe` (`~70 KB`, single standalone executable, no installer required) from [**GitHub Releases**](https://github.com/vncwr/TrimFlow/releases/latest) and run it directly. Upon launch, TrimFlow displays a non-intrusive status card above the system tray showing live memory reclaimed.
 
 ---
 
-## 2. How TrimFlow Works
+## 2. Why TrimFlow Instead of Traditional "RAM Cleaners"?
 
-Rather than treating an application as a monolithic block or flushing global system memory indiscriminately, `TrimFlow` evaluates **individual subprocesses** through a three-stage heuristic pipeline before cooperating with the Windows kernel:
+Modern desktop and web applications rely on multi-process architectures (Chromium's site-isolation model and Electron's helper hierarchy) that spawn 10 to 60+ OS subprocesses per application. Even when background tabs, IDE extension hosts, or covered windows (`code.exe`, `brave.exe`, `Spotify.exe`, `Discord.exe`) are idle, their V8 heaps and uncommitted page tables remain pinned in physical RAM—often consuming **4 GB to 8+ GB**.
 
-1. **Foreground & Window Visibility Protection (`InspectWindows`)**
-   * Identifies the active foreground process (`GetForegroundWindow`) and enumerates all visible, non-minimized top-level windows (`EnumWindows`).
-   * Subprocesses owning active visible UI surfaces are protected from working-set eviction so window switching and UI rendering remain instantaneous (`0 ms` repaint latency).
+Conventional "RAM cleaner" utilities blindly invoke `EmptyWorkingSet` across **every** process on a fixed timer. That causes two severe problems:
+1. **UI & Audio Stutters:** Evicting pages from the active foreground window, its `--type=gpu-process` compositor, or `audio.mojom.AudioService` forces immediate hard/soft page faults while you scroll, type, or listen to music.
+2. **CPU Page-Table Thrashing:** Repeatedly flushing a dormant background process every 5 seconds burns CPU cycles walking page tables when the process hasn't allocated any new memory.
 
-2. **CPU Delta Telemetry Sampling (`GetProcessTimes`)**
-   * Samples kernel and user-mode execution time across a `1.2-second` telemetry window for every candidate subprocess.
-   * Any subprocess exceeding `0.25%` single-core utilization—such as an active audio decoder (`Spotify.exe`), WebRTC voice thread (`Discord.exe`), video playback tab, or GPU compositor—is marked **Active**, skipped from trimming, and restored to `MEMORY_PRIORITY_NORMAL` (`5`).
+### How TrimFlow Solves Both
 
-3. **Kernel-Cooperative Subprocess Demotion**
-   * For subprocesses verified to be **idle** (`< 0.25%` CPU and not in the foreground):
-     1. **Page Priority Demotion (`ProcessMemoryPriority` → `MEMORY_PRIORITY_VERY_LOW`):** Signals the Windows 10/11 Memory Manager to prioritize these pages for in-RAM compression inside the kernel **Memory Compression Store** rather than evicting active foreground or game pages.
-     2. **Execution Throttling (`ProcessPowerThrottling` → `EcoQoS`):** Enables Windows Efficiency Mode (`PROCESS_POWER_THROTTLING_EXECUTION_SPEED`), scheduling background V8 timers and garbage-collection ticks onto efficient cores at lowest frequency so they do not pollute L3 cache or interrupt game render threads.
-     3. **Targeted Working-Set Trim (`K32EmptyWorkingSet`):** Reclaims unused physical pages exclusively from idle background child processes.
+1. **In-Memory PEB Command-Line Role Classification (`NtQueryInformationProcess`)**
+   * Inspects remote process command lines to classify every subprocess into `MainOrStandalone` (root UI), `GpuCompositor` (`--type=gpu-process`), `AudioOrNetwork` (`audio.mojom.AudioService`, `network.mojom.NetworkService`), or `RendererOrWorker` (`--type=renderer`, `--type=utility`, `-contentproc`).
+   * Audio and network service subprocesses are **unconditionally protected** even when minimized so background music and voice calls never drop a frame.
+
+2. **Foreground Window Protection & `< 1 ms` Focus Promotion (`SetWinEventHook`)**
+   * For the **active foreground application**, its main UI host, GPU compositor, and primary active renderer tab remain completely untouched in hot physical RAM.
+   * For **covered or minimized applications**, idle background renderers and extension hosts are trimmed once and placed into Windows 11 **Efficiency Mode (`EcoQoS`)** + `BELOW_NORMAL_PRIORITY_CLASS`.
+   * Hooks `EVENT_SYSTEM_FOREGROUND` (`WINEVENT_OUTOFCONTEXT`) so the instant you `Alt+Tab` or click into a background app, all of its subprocesses are restored to normal QoS and priority in **under 1 millisecond**.
+
+3. **`+8 MB` Anti-Thrashing Growth Hysteresis**
+   * Records each subprocess's post-trim Working Set baseline and skips re-trimming dormant processes until they allocate at least **`+8 MB`** of new pages.
 
 ---
 
 ## 3. Real-World Benchmark
 
-Measured on Windows 11 with 15 `brave.exe` subprocesses, 7 `Spotify.exe` subprocesses, 5 `msedge.exe` subprocesses, 6 `msedgewebview2.exe` subprocesses, and 2 `SnippingTool.exe` subprocesses:
+Measured on a 16 GB Windows 11 workstation running VS Code (`code.exe`), Antigravity IDE, Brave Browser, and Spotify (playing audio in the background):
 
-| Application | Subprocesses | Trimmed | Active | Before (MB) | After (MB) | Reclaimed (MB) |
-|---|---:|---:|---:|---:|---:|---:|
-| `brave.exe` | 15 | 15 | 0 | 2,072.5 MB | 29.8 MB | **-2,042.7 MB** |
-| `Spotify.exe` | 7 | 7 | 0 | 528.8 MB | 9.0 MB | **-519.8 MB** |
-| `msedge.exe` | 5 | 5 | 0 | 226.2 MB | 0.0 MB | **-226.2 MB** |
-| `SnippingTool.exe` | 2 | 2 | 0 | 174.8 MB | 0.0 MB | **-174.8 MB** |
-| `msedgewebview2.exe` | 6 | 6 | 0 | 128.6 MB | 2.5 MB | **-126.1 MB** |
-| **Total** | **35** | **35** | **0** | **3,130.9 MB** | **41.2 MB** | **-3,089.7 MB** |
+| Application Group | Subprocesses | Before TrimFlow | After TrimFlow | Physical RAM Reclaimed |
+| :--- | :---: | :---: | :---: | :---: |
+| **Visual Studio Code (`code.exe`)** *(backgrounded)* | 13 | 1,846.4 MB | 80.0 MB | **-1,766.4 MB (-95.7%)** |
+| **Antigravity IDE** | 29 | 1,701.2 MB | 538.9 MB | **-1,162.3 MB (-68.3%)** |
+| **Brave Browser (`brave.exe`)** | 16 | 936.9 MB | 200.1 MB | **-736.8 MB (-78.6%)** |
+| **Spotify (`Spotify.exe`)** *(audio playing)* | 7 | 228.5 MB | 32.0 MB | **-196.5 MB (-86.0%)** |
+| **Total Across Managed Groups** | **65** | **4,713.0 MB** | **851.0 MB** | **-3,862.0 MB (-81.9%)** |
 
-* **`TrimFlow.exe` Own Footprint:** `~0.15 MB` (`150 KB`) Private Working Set, `0.00%` idle CPU.
-
----
-
-## 4. Features
-
-* **System Tray Indicator:** Displays a live emerald gauge of system memory load with a tooltip reporting used/total RAM and cumulative session memory reclaimed.
-* **Auto-Optimize Background Subprocesses:** Periodically sweeps idle subprocesses at a configurable interval (`15s`, `30s`, or `60s`).
-* **Game-Boost Mode:** Automatically detects when a fullscreen game is running and switches to aggressive background trimming across non-game launchers (`steamwebhelper.exe`, `epicwebhelper.exe`, browsers, and chat clients).
-* **Visible UI Window Protection:** Keeps non-minimized browser/app UI processes warm while compressing idle background tab renderers.
-* **Per-Application Exclusion Toggles:** Enable or exclude individual applications directly from the tray menu; settings persist in `HKCU\Software\TrimFlow`.
-* **Command-Line Interface:** Run one-shot optimizations or inspect current memory usage from scripts or terminals.
+* **System-Wide RAM Load:** Dropped from **79% → 51%** (`~3.86 GB` moved to the Windows Standby List for instant zero-disk soft-fault reuse).
+* **`TrimFlow.exe` Own Footprint:** **`0.08 MB` (`80 KB`)** Private Working Set, `0.00%` idle CPU.
 
 ---
 
-## 5. Command-Line Usage
+## 4. Command-Line & Tray Usage
 
 ```powershell
-TrimFlow.exe            # Launch the background system tray optimizer
-TrimFlow.exe --once     # Run a single optimization pass, print the Before/After table, and exit
-TrimFlow.exe --status   # Print current memory usage of managed applications without modifying state
+TrimFlow.exe            # Launch the system tray optimizer (shows a 4.5s status toast on startup)
+TrimFlow.exe --quiet    # Launch silently in the system tray without the startup toast
+TrimFlow.exe --once     # Run a single smart optimization pass, print the Before/After table, and exit
+TrimFlow.exe --status   # Print current memory usage of discovered process trees without modifying state
 TrimFlow.exe --quit     # Gracefully close the running tray instance
 ```
 
+* **Single-Click Tray Icon:** Summons the live bottom-right status banner showing current memory saved and system RAM percentage.
+* **Right-Click Tray Icon:** Opens the custom dark-themed dashboard (`Pause Auto-Trim`, `Run Smart Sweep Now`, `Run at Windows Login`, `Exit TrimFlow`).
+
 ---
 
-## 6. Building from Source
+## 5. Building & Running Tests from Source
 
-Requires [MinGW-w64](https://www.mingw-w64.org/) (`g++` on `PATH`, e.g., via MSYS2):
+Requires [MinGW-w64](https://www.mingw-w64.org/) (`g++` on `PATH`, e.g., via MSYS2 `C:\msys64\ucrt64\bin`):
 
 ```powershell
-build.bat   # Windows Command Prompt / PowerShell
-make        # MSYS2 / GNU Make
+.\test.bat    # Compile and run the 59 unit & benchmark scenario tests (< 2 seconds)
+.\build.bat   # Build the standalone ~70 KB TrimFlow.exe binary
 ```
-
-Produces a standalone, statically linked `TrimFlow.exe` with no external runtime dependencies.
 
 ---
 
-## 7. Safety & Anti-Cheat Compliance
+## 6. Safety & Anti-Cheat Compliance
 
-* **Zero Code Injection / Zero Memory Modification:** `TrimFlow` uses exclusively documented user-mode Win32 APIs (`SetProcessInformation` and `K32EmptyWorkingSet`). It never reads, writes, or hooks foreign virtual address spaces.
-* **Dynamic Session Discovery & System/Anti-Cheat Protection:** Rather than relying on a hardcoded application list, `TrimFlow` dynamically inspects all processes in the current user session (`ProcessIdToSessionId`), automatically excluding critical OS kernel/session daemons (`kSystemProtected`), anti-cheat services (`Vanguard`, `EasyAntiCheat`, `BattlEye`), and the active foreground fullscreen game.
+* **Zero Code Injection / Zero Foreign Memory Writes:** TrimFlow uses exclusively documented user-mode Win32 APIs (`SetProcessInformation`, `SetPriorityClass`, `K32EmptyWorkingSet`, and `NtQueryInformationProcess` with `PROCESS_QUERY_LIMITED_INFORMATION`). It never injects DLLs, hooks foreign threads, or modifies foreign virtual memory.
+* **Built-In OS & Anti-Cheat Exclusion List:** Automatically excludes critical Windows kernel/session services (`csrss.exe`, `dwm.exe`, `audiodg.exe`, `explorer.exe`), anti-cheat engines (`Vanguard`, `EasyAntiCheat`, `BattlEye`), and active fullscreen games.
+
+---
+
+## 7. Roadmap (`v1.1` Narrow Scope) & Contributing
+
+`v1.1` is intentionally scoped to **diagnostics, observability, and installer polish** without adding bloat:
+- [ ] `--diagnose` CLI mode to inspect per-PID command-line role classification and protection reasons
+- [ ] `--json` output flag for `--status` and `--once`
+- [ ] Optional `trimflow.ini` configuration file & `--validate-config` checker
+- [ ] Additional table-driven scenario tests in [`tests/heuristics_test.cpp`](tests/heuristics_test.cpp)
+
+Want to contribute? Read the 2-minute [**Contributing Guide**](CONTRIBUTING.md) and check out our [**`good first issue`**](https://github.com/vncwr/TrimFlow/labels/good%20first%20issue) tickets!
 
 ---
 

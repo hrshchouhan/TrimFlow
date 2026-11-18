@@ -1,0 +1,42 @@
+name: Bug Report
+description: Report unexpected behavior, high page-faults, or process misclassification
+title: "[Bug]: "
+labels: ["bug", "windows"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Please include `--status` output if possible.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of what went wrong (e.g., an audio app stuttered, or a background app was not trimmed).
+      placeholder: "Example: VS Code extension host was not trimmed when VS Code was behind my browser..."
+    validations:
+      required: true
+  - type: textarea
+    id: status_output
+    attributes:
+      label: TrimFlow --status output
+      description: Run `TrimFlow.exe --status` in PowerShell or Command Prompt and paste the relevant lines.
+      render: shell
+  - type: input
+    id: windows_version
+    attributes:
+      label: Windows Version & Build
+      description: Run `winver` or `ver` (e.g., Windows 11 24H2 Build 26100)
+      placeholder: "Windows 11 23H2 (Build 22631)"
+    validations:
+      required: true
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Installation Method
+      options:
+        - GitHub Release (Portable ZIP / EXE)
+        - Scoop
+        - WinGet
+        - Built from source (MinGW / MSVC)
+    validations:
+      required: true

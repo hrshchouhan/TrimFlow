@@ -117,4 +117,22 @@ inline bool IsCpuActiveDelta(ULONGLONG cpuTime1, ULONGLONG cpuTime2) {
     return delta > kActiveCpuDelta100ns;
 }
 
+// Determines whether a subprocess must be kept hot in physical RAM (exempt from K32EmptyWorkingSet).
+// - Audio/Network services and CPU-active processes are always protected.
+// - For the active foreground application, its main UI host, GPU compositor, and primary active renderer are protected.
+// - For covered or minimized background applications, idle UI/GPU/renderer workers are eligible for working-set trim.
+inline bool ShouldKeepSubprocessHot(SubprocRole role,
+                                    bool isForegroundApp,
+                                    bool isCpuActive,
+                                    bool isPrimaryRenderer) {
+    if (isCpuActive) return true;
+    if (role == SubprocRole::AudioOrNetwork) return true;
+    if (isForegroundApp && (role == SubprocRole::MainOrStandalone ||
+                            role == SubprocRole::GpuCompositor ||
+                            isPrimaryRenderer)) {
+        return true;
+    }
+    return false;
+}
+
 }  // namespace trimflow

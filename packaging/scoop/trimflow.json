@@ -1,0 +1,30 @@
+{
+    "version": "1.0.0",
+    "description": "Context-aware subprocess memory and EcoQoS optimizer for Windows 10/11 (~80 KB RAM, zero dependencies).",
+    "homepage": "https://github.com/vncwr/TrimFlow",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/vncwr/TrimFlow/releases/download/v1.0.0/TrimFlow-v1.0.0-win64-portable.zip",
+            "hash": "d44da94e243d29f0654d0e62980c65c951c33a921cf512b24a1674e26f9d1bdb"
+        }
+    },
+    "bin": "TrimFlow.exe",
+    "shortcuts": [
+        [
+            "TrimFlow.exe",
+            "TrimFlow"
+        ]
+    ],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/vncwr/TrimFlow/releases/download/v$version/TrimFlow-v$version-win64-portable.zip"
+            }
+        },
+        "hash": {
+            "url": "$baseurl/SHA256SUMS.txt"
+        }
+    }
+}
