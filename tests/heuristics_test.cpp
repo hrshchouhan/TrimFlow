@@ -171,45 +171,70 @@ void TestBenchmarkScenarios() {
 
     struct SimulatedProc {
         const wchar_t* cmdLine;
+        SubprocRole expectedRole;
         bool isCpuActive;
         bool isPrimaryRenderer;
         bool expectHotWhenForeground;
         bool expectHotWhenBackground;
     };
 
-    // Scenario 1: VS Code (code.exe) 6-representative-process tree
-    const SimulatedProc vscodeTree[] = {
-        // Main Electron host process
-        {L"\"Code.exe\"", false, false, true, false},
-        // GPU process
-        {L"\"Code.exe\" --type=gpu-process --disable-features=NetworkServiceSandbox", false, false, true, false},
-        // Real NetworkService
-        {L"\"Code.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService", false, false, true, true},
-        // Primary active window renderer
-        {L"\"Code.exe\" --type=renderer --disable-features=NetworkServiceSandbox", false, true, true, false},
-        // Idle background window renderer
-        {L"\"Code.exe\" --type=renderer --disable-features=NetworkServiceSandbox", false, false, false, false},
-        // Extension host utility worker (idle)
-        {L"\"Code.exe\" --type=utility --utility-sub-type=node.mojom.NodeService --disable-features=NetworkServiceSandbox", false, false, false, false},
+    using Role = SubprocRole;
+    const SimulatedProc scenarios[] = {
+        // VS Code with multiple windows and an idle extension host.
+        {L"\"Code.exe\"", Role::MainOrStandalone, false, false, true, false},
+        {L"\"Code.exe\" --type=gpu-process --disable-features=NetworkServiceSandbox",
+         Role::GpuCompositor, false, false, true, false},
+        {L"\"Code.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService",
+         Role::AudioOrNetwork, false, false, true, true},
+        {L"\"Code.exe\" --type=renderer --disable-features=NetworkServiceSandbox",
+         Role::RendererOrWorker, false, true, true, false},
+        {L"\"Code.exe\" --type=renderer --disable-features=NetworkServiceSandbox",
+         Role::RendererOrWorker, false, false, false, false},
+        {L"\"Code.exe\" --type=utility --utility-sub-type=node.mojom.NodeService --disable-features=NetworkServiceSandbox",
+         Role::RendererOrWorker, false, false, false, false},
+
+        // Spotify playing audio while minimized.
+        {L"\"Spotify.exe\" --type=utility --utility-sub-type=audio.mojom.AudioService",
+         Role::AudioOrNetwork, false, false, true, true},
+        {L"\"Spotify.exe\" --type=renderer --lang=en", Role::RendererOrWorker, false, false, false, false},
+
+        // Firefox tabs and a busy remote data decoder (RDD) child.
+        {L"\"firefox.exe\"", Role::MainOrStandalone, false, false, true, false},
+        {L"\"firefox.exe\" -contentproc -childID 2 -isForBrowser", Role::RendererOrWorker, false, true, true, false},
+        {L"\"firefox.exe\" -contentproc -childID 3 -isForBrowser", Role::RendererOrWorker, false, false, false, false},
+        {L"\"firefox.exe\" -contentproc -parentPid 1000 rdd", Role::RendererOrWorker, true, false, true, true},
+
+        // Minimized Discord voice call with an idle UI.
+        {L"\"Discord.exe\" --type=utility --utility-sub-type=audio.mojom.AudioService",
+         Role::AudioOrNetwork, false, false, true, true},
+        {L"\"Discord.exe\" --type=renderer", Role::RendererOrWorker, false, false, false, false},
+
+        // WebView2 browser and renderer for the Windows Widgets host.
+        {L"\"msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=Widgets.exe",
+         Role::MainOrStandalone, false, false, true, false},
+        {L"\"msedgewebview2.exe\" --type=renderer --embedded-browser-webview=1",
+         Role::RendererOrWorker, false, false, false, false},
+
+        // Slack passes NetworkServiceSandbox to both its helpers and the actual network service.
+        {L"\"slack.exe\" --type=renderer --disable-features=CalculateNativeWinOcclusion,NetworkServiceSandbox",
+         Role::RendererOrWorker, false, false, false, false},
+        {L"\"slack.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService "
+         L"--disable-features=CalculateNativeWinOcclusion,NetworkServiceSandbox",
+         Role::AudioOrNetwork, false, false, true, true},
     };
 
-    for (const auto& p : vscodeTree) {
-        SubprocRole role = ClassifyCommandLine(p.cmdLine, 13);
+    for (const auto& p : scenarios) {
+        const int failuresBefore = g_failed;
+        const auto role = ClassifyCommandLine(p.cmdLine, /*groupCount=*/2);
+        EXPECT_EQ(role, p.expectedRole);
         EXPECT_EQ(ShouldKeepSubprocessHot(role, /*isForegroundApp=*/true, p.isCpuActive, p.isPrimaryRenderer),
                   p.expectHotWhenForeground);
         EXPECT_EQ(ShouldKeepSubprocessHot(role, /*isForegroundApp=*/false, p.isCpuActive, p.isPrimaryRenderer),
                   p.expectHotWhenBackground);
+        if (g_failed != failuresBefore) {
+            printf("  Command line: %ls (primary renderer: %d)\n", p.cmdLine, p.isPrimaryRenderer);
+        }
     }
-
-    // Scenario 2: Spotify playing audio in the background
-    // AudioService and NetworkService must remain hot even when Spotify is minimized/backgrounded,
-    // while Chromium UI and idle renderer helpers are trimmed.
-    SubprocRole spotifyAudio = ClassifyCommandLine(
-        L"\"Spotify.exe\" --type=utility --utility-sub-type=audio.mojom.AudioService", 7);
-    SubprocRole spotifyRenderer = ClassifyCommandLine(
-        L"\"Spotify.exe\" --type=renderer --lang=en", 7);
-    EXPECT_TRUE(ShouldKeepSubprocessHot(spotifyAudio, /*isForegroundApp=*/false, /*isCpuActive=*/false, false));
-    EXPECT_FALSE(ShouldKeepSubprocessHot(spotifyRenderer, /*isForegroundApp=*/false, /*isCpuActive=*/false, false));
 }
 
 }  // namespace
