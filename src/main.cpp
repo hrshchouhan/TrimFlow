@@ -405,8 +405,6 @@ PassReport RunOptimizationPass(bool statusOnly, bool forceTrimVisible) {
     // 1.0-second CPU delta telemetry window
     Sleep(1000);
 
-    bool gameBoostActive = g_gameBoost && rep.fullscreenGameDetected;
-    bool protectVis = g_protectVisible && !forceTrimVisible && !gameBoostActive;
     ULONGLONG nowTick = GetTickCount64();
 
     // Identify the single most active renderer/worker per foreground application so only the active tab
