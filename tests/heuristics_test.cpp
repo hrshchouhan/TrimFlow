@@ -1,8 +1,11 @@
 // Unit and behavioral benchmark scenario test suite for TrimFlow heuristics & subprocess classification.
 #include "../src/heuristics.h"
+#include "../src/strings.h"
 
 #include <cstdio>
 #include <cstdlib>
+#include <cwchar>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -237,6 +240,50 @@ void TestBenchmarkScenarios() {
     }
 }
 
+// A string table must have every field filled in; a missing translation would otherwise be a null pointer.
+bool AllStringFieldsSet(const UiStrings& table) {
+    static_assert(std::is_standard_layout<UiStrings>::value, "UiStrings must stay a plain table of pointers");
+    const wchar_t* const* fields = reinterpret_cast<const wchar_t* const*>(&table);
+    for (size_t i = 0; i < sizeof(UiStrings) / sizeof(const wchar_t*); ++i) {
+        if (!fields[i] || !fields[i][0]) return false;
+    }
+    return true;
+}
+
+// Guards the move of the UI text into strings.h: the English output must stay exactly what it was.
+void TestEnglishStringsKeepOriginalText() {
+    const UiStrings& s = kEnglish;
+    EXPECT_TRUE(AllStringFieldsSet(s));
+    EXPECT_TRUE(AllStringFieldsSet(GetStrings()));
+
+    wchar_t buf[256];
+    swprintf(buf, 256, s.tooltipFmt, 8.0, 16.0, 50UL, 120.0);
+    EXPECT_TRUE(wcscmp(buf, L"TrimFlow — RAM: 8.0 / 16.0 GB (50%)\nSession reclaimed: 120 MB") == 0);
+
+    swprintf(buf, 256, s.menuHeaderFmt, 8.0, 16.0, 50UL, 120.0);
+    EXPECT_TRUE(wcscmp(buf, L"System RAM: 8.0 / 16.0 GB (50%)  |  Reclaimed: 120 MB") == 0);
+
+    swprintf(buf, 256, s.menuAppFmt, L"chrome.exe", 3, s.procPlural, 512.5, s.excludedSuffix);
+    EXPECT_TRUE(wcscmp(buf, L"chrome.exe  —  3 procs (512.5 MB)  [excluded]") == 0);
+    swprintf(buf, 256, s.menuAppFmt, L"code.exe", 1, s.procSingular, 64.0, L"");
+    EXPECT_TRUE(wcscmp(buf, L"code.exe  —  1 proc (64.0 MB)") == 0);
+    swprintf(buf, 256, s.menuAppExcludedFmt, L"slack.exe");
+    EXPECT_TRUE(wcscmp(buf, L"slack.exe  [excluded]") == 0);
+
+    swprintf(buf, 256, s.toastReclaimedFmt, 42.0, 5);
+    EXPECT_TRUE(wcscmp(buf, L"Reclaimed 42 MB across 5 active apps") == 0);
+    swprintf(buf, 256, s.toastMonitoringFmt, 5);
+    EXPECT_TRUE(wcscmp(buf, L"Monitoring 5 apps in system tray") == 0);
+    swprintf(buf, 256, s.toastAlreadyRunningFmt, 8.0, 16.0, 50UL, 120.0);
+    EXPECT_TRUE(wcscmp(buf, L"RAM: 8.0 / 16.0 GB (50%)  •  Reclaimed: 120 MB") == 0);
+
+    EXPECT_TRUE(wcscmp(s.menuExit, L"Exit") == 0);
+    EXPECT_TRUE(wcscmp(s.menuAutostart, L"Start with Windows") == 0);
+    EXPECT_TRUE(wcscmp(s.toastStartedTitle, L"TrimFlow started") == 0);
+    EXPECT_TRUE(wcscmp(s.toastRunningTitle, L"TrimFlow is running in background") == 0);
+    EXPECT_TRUE(wcscmp(s.toastAlreadyRunningTitle, L"TrimFlow is already running") == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -248,6 +295,7 @@ int main() {
     TestAntiThrashingHysteresis();
     TestCpuDeltaThreshold();
     TestBenchmarkScenarios();
+    TestEnglishStringsKeepOriginalText();
 
     printf("Results: %d passed, %d failed.\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;

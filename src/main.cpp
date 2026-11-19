@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "heuristics.h"
+#include "strings.h"
 
 #ifndef PROCESS_POWER_THROTTLING_CURRENT_VERSION
 #define PROCESS_POWER_THROTTLING_CURRENT_VERSION 1
@@ -608,7 +609,7 @@ void UpdateTrayIcon(bool add = false) {
     nid.hIcon = g_icon;
     double usedGB = (ms.ullTotalPhys - ms.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0);
     double totalGB = ms.ullTotalPhys / (1024.0 * 1024.0 * 1024.0);
-    swprintf(nid.szTip, ARRAYSIZE(nid.szTip), L"TrimFlow — RAM: %.1f / %.1f GB (%lu%%)\nSession reclaimed: %.0f MB",
+    swprintf(nid.szTip, ARRAYSIZE(nid.szTip), GetStrings().tooltipFmt,
              usedGB, totalGB, ms.dwMemoryLoad, g_sessionSavedMB);
     Shell_NotifyIconW(add ? NIM_ADD : NIM_MODIFY, &nid);
 }
@@ -714,31 +715,32 @@ void ShowTrayMenu() {
     double usedGB = (ms.ullTotalPhys - ms.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0);
     double totalGB = ms.ullTotalPhys / (1024.0 * 1024.0 * 1024.0);
 
+    const UiStrings& str = GetStrings();
     HMENU m = CreatePopupMenu();
     wchar_t header[128];
-    swprintf(header, 128, L"System RAM: %.1f / %.1f GB (%lu%%)  |  Reclaimed: %.0f MB",
+    swprintf(header, 128, str.menuHeaderFmt,
              usedGB, totalGB, ms.dwMemoryLoad, g_sessionSavedMB);
     AppendMenuW(m, MF_STRING | MF_GRAYED, 0, header);
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
 
-    AppendMenuW(m, MF_STRING, ID_OPTIMIZE_NOW, L"Optimize background apps now");
-    AppendMenuW(m, MF_STRING | (g_autoOptimize ? MF_CHECKED : 0), ID_AUTO_ENABLE, L"Auto-optimize idle subprocesses");
+    AppendMenuW(m, MF_STRING, ID_OPTIMIZE_NOW, str.menuOptimizeNow);
+    AppendMenuW(m, MF_STRING | (g_autoOptimize ? MF_CHECKED : 0), ID_AUTO_ENABLE, str.menuAutoOptimize);
     {
         HMENU intSub = CreatePopupMenu();
-        AppendMenuW(intSub, MF_STRING | (g_intervalSec == 15 ? MF_CHECKED : 0), ID_INTERVAL_15, L"Every 15 seconds");
-        AppendMenuW(intSub, MF_STRING | (g_intervalSec == 30 ? MF_CHECKED : 0), ID_INTERVAL_30, L"Every 30 seconds (Recommended)");
-        AppendMenuW(intSub, MF_STRING | (g_intervalSec == 60 ? MF_CHECKED : 0), ID_INTERVAL_60, L"Every 60 seconds");
-        AppendMenuW(m, MF_POPUP, (UINT_PTR)intSub, L"Auto-optimize interval");
+        AppendMenuW(intSub, MF_STRING | (g_intervalSec == 15 ? MF_CHECKED : 0), ID_INTERVAL_15, str.menuInterval15);
+        AppendMenuW(intSub, MF_STRING | (g_intervalSec == 30 ? MF_CHECKED : 0), ID_INTERVAL_30, str.menuInterval30);
+        AppendMenuW(intSub, MF_STRING | (g_intervalSec == 60 ? MF_CHECKED : 0), ID_INTERVAL_60, str.menuInterval60);
+        AppendMenuW(m, MF_POPUP, (UINT_PTR)intSub, str.menuInterval);
     }
     AppendMenuW(m, MF_STRING | (g_protectVisible ? MF_CHECKED : 0), ID_PROTECT_VISIBLE,
-                L"Protect visible (non-minimized) UI & GPU processes");
+                str.menuProtectVisible);
     AppendMenuW(m, MF_STRING | (g_gameBoost ? MF_CHECKED : 0), ID_GAME_BOOST,
-                L"Game-Boost Mode (aggressive trim during fullscreen games)");
+                str.menuGameBoost);
     AppendMenuW(m, MF_STRING | (g_multiProcOnly ? MF_CHECKED : 0), ID_MULTI_ONLY,
-                L"Only target multi-process apps (browsers, Electron, WebView)");
+                str.menuMultiProcOnly);
 
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Discovered applications (click to enable/exclude):");
+    AppendMenuW(m, MF_STRING | MF_GRAYED, 0, str.menuDiscoveredHeader);
 
     struct Entry { std::wstring name; AppSummary sum; };
     std::vector<Entry> sorted;
@@ -758,20 +760,20 @@ void ShowTrayMenu() {
         wchar_t line[128];
         if (e.sum.totalProcs > 0) {
             double mb = e.sum.afterBytes / (1024.0 * 1024.0);
-            swprintf(line, 128, L"%ls  —  %d %ls (%.1f MB)%ls",
+            swprintf(line, 128, str.menuAppFmt,
                      e.name.c_str(), e.sum.totalProcs,
-                     e.sum.totalProcs == 1 ? L"proc" : L"procs",
-                     mb, excluded ? L"  [excluded]" : L"");
+                     e.sum.totalProcs == 1 ? str.procSingular : str.procPlural,
+                     mb, excluded ? str.excludedSuffix : L"");
         } else {
-            swprintf(line, 128, L"%ls  [excluded]", e.name.c_str());
+            swprintf(line, 128, str.menuAppExcludedFmt, e.name.c_str());
         }
         AppendMenuW(m, MF_STRING | (excluded ? 0 : MF_CHECKED), ID_APP_FIRST + appNames.size(), line);
         appNames.push_back(e.name);
     }
 
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_AUTOSTART, L"Start with Windows");
-    AppendMenuW(m, MF_STRING, ID_EXIT, L"Exit");
+    AppendMenuW(m, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_AUTOSTART, str.menuAutostart);
+    AppendMenuW(m, MF_STRING, ID_EXIT, str.menuExit);
 
     POINT pt;
     GetCursorPos(&pt);
@@ -847,12 +849,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             UpdateTrayIcon(false);
             if (g_firstPassToastPending) {
                 g_firstPassToastPending = false;
+                const UiStrings& str = GetStrings();
                 wchar_t sub[128];
                 if (passSavedMB >= 1.0)
-                    swprintf(sub, 128, L"Reclaimed %.0f MB across %d active apps", passSavedMB, appCount);
+                    swprintf(sub, 128, str.toastReclaimedFmt, passSavedMB, appCount);
                 else
-                    swprintf(sub, 128, L"Monitoring %d apps in system tray", appCount);
-                ShowStatusToast(L"TrimFlow is running in background", sub, 4500);
+                    swprintf(sub, 128, str.toastMonitoringFmt, appCount);
+                ShowStatusToast(str.toastRunningTitle, sub, 4500);
             }
             TrimSelfMemory();
             return 0;
@@ -862,10 +865,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             GlobalMemoryStatusEx(&ms);
             double usedGB = (ms.ullTotalPhys - ms.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0);
             double totalGB = ms.ullTotalPhys / (1024.0 * 1024.0 * 1024.0);
+            const UiStrings& str = GetStrings();
             wchar_t sub[128];
-            swprintf(sub, 128, L"RAM: %.1f / %.1f GB (%lu%%)  •  Reclaimed: %.0f MB",
+            swprintf(sub, 128, str.toastAlreadyRunningFmt,
                      usedGB, totalGB, ms.dwMemoryLoad, g_sessionSavedMB);
-            ShowStatusToast(L"TrimFlow is already running", sub, 4500);
+            ShowStatusToast(str.toastAlreadyRunningTitle, sub, 4500);
             SetEvent(g_wakeEvt);
             return 0;
         }
@@ -985,7 +989,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_wakeEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_stopEvt = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     UpdateTrayIcon(true);
-    ShowStatusToast(L"TrimFlow started", L"Scanning background subprocesses...", 4000);
+    ShowStatusToast(GetStrings().toastStartedTitle, GetStrings().toastStartedBody, 4000);
     SetTimer(g_hwnd, TIMER_UI, 15000, nullptr);
     g_worker = CreateThread(nullptr, 65536, WorkerThread, nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
     TrimSelfMemory();
