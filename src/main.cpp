@@ -905,7 +905,26 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-int RunCli(bool statusOnly) {
+std::string ToUtf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+std::string JsonEscape(const std::string& in) {
+    std::string out;
+    for (unsigned char c : in) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); out += b; }
+        else out += (char)c;
+    }
+    return out;
+}
+
+int RunCli(bool statusOnly, bool json) {
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!out || out == INVALID_HANDLE_VALUE) {
         if (AttachConsole(ATTACH_PARENT_PROCESS))
@@ -918,6 +937,32 @@ int RunCli(bool statusOnly) {
     };
 
     PassReport rep = RunOptimizationPass(statusOnly, true);
+
+    if (json) {
+        MEMORYSTATUSEX ms{ sizeof(ms) };
+        GlobalMemoryStatusEx(&ms);
+        double totBef = 0, totAft = 0;
+        std::string groups;
+        for (const auto& [name, a] : rep.apps) {
+            double bef = a.beforeBytes / (1024.0 * 1024.0);
+            double aft = a.afterBytes / (1024.0 * 1024.0);
+            totBef += bef;
+            totAft += aft;
+            char buf[160];
+            snprintf(buf, sizeof buf, "\",\"processes\":%d,\"trimmed\":%d,\"beforeMB\":%.1f,\"afterMB\":%.1f}",
+                     a.totalProcs, a.trimmedProcs, bef, aft);
+            if (!groups.empty()) groups += ",";
+            groups += "{\"name\":\"" + JsonEscape(ToUtf8(name)) + buf;
+        }
+        char head[200];
+        snprintf(head, sizeof head,
+                 "{\"systemMemoryLoadPercent\":%lu,\"totalBeforeMB\":%.1f,\"totalAfterMB\":%.1f,\"reclaimedMB\":%.1f,\"groups\":[",
+                 (unsigned long)ms.dwMemoryLoad, totBef, totAft, totBef - totAft);
+        std::string json_out = std::string(head) + groups + "]}\n";
+        print(json_out.c_str());
+        return 0;
+    }
+
     char line[256];
     snprintf(line, sizeof(line), "%-26s %6s %8s %8s %12s %12s %12s\n",
              "Application (Dynamic)", "Procs", "Trimmed", "Active", "Before (MB)", "After (MB)", "Delta (MB)");
@@ -940,6 +985,8 @@ int RunCli(bool statusOnly) {
     return 0;
 }
 
+
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
@@ -955,8 +1002,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
         if (HWND w = FindWindowW(L"TrimFlowTrayWnd", nullptr)) PostMessageW(w, WM_CLOSE, 0, 0);
         return 0;
     }
-    if (cmdLine && wcsstr(cmdLine, L"--status")) return RunCli(true);
-    if (cmdLine && wcsstr(cmdLine, L"--once")) return RunCli(false);
+        bool json = cmdLine && wcsstr(cmdLine, L"--json");
+    if (cmdLine && wcsstr(cmdLine, L"--status")) return RunCli(true, json);
+    if (cmdLine && wcsstr(cmdLine, L"--once")) return RunCli(false, json);
 
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\TrimFlowSingleton");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {

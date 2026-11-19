@@ -32,8 +32,8 @@ TrimFlow.exe                   # Launch tray utility (shows a 4s status banner o
 TrimFlow.exe --quiet           # Launch silently in the system tray
 TrimFlow.exe --status | Out-Host  # Print current per-group Working Set without modifying processes
 TrimFlow.exe --once   | Out-Host  # Run one optimization pass, print Before/After table, and exit
+TrimFlow.exe --status --json | Out-Host  # Same data as JSON for scripts (also works with --once)
 TrimFlow.exe --quit            # Restore throttled processes and exit the running tray instance
-```
 
 *(Note: Because `TrimFlow.exe` is compiled with `-mwindows` for tray usage, pipe CLI invocations to `| Out-Host` in PowerShell so the shell waits for the 1-second CPU sampling window to finish.)*
 
