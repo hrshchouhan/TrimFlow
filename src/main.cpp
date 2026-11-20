@@ -90,7 +90,26 @@ struct AppSummary {
     SIZE_T afterBytes = 0;
 };
 
+struct DiagRow {
+    DWORD pid = 0;
+    std::wstring name;
+    SubprocRole role = SubprocRole::MainOrStandalone;
+    bool isForegroundApp = false;
+    bool protectedProc = false;
+    std::wstring reason;
+};
+
+const wchar_t* RoleName(SubprocRole r) {
+    switch (r) {
+        case SubprocRole::GpuCompositor:    return L"GpuCompositor";
+        case SubprocRole::AudioOrNetwork:   return L"AudioOrNetwork";
+        case SubprocRole::RendererOrWorker: return L"RendererOrWorker";
+        default:                            return L"MainOrStandalone";
+    }
+}
+
 struct PassReport {
+    std::vector<DiagRow> diag;
     std::map<std::wstring, AppSummary> apps;
     SIZE_T totalSavedBytes = 0;
     bool fullscreenGameDetected = false;
@@ -323,7 +342,7 @@ struct SampledProc {
     SIZE_T wsBefore = 0;
 };
 
-PassReport RunOptimizationPass(bool statusOnly, bool forceTrimVisible) {
+PassReport RunOptimizationPass(bool statusOnly, bool forceTrimVisible, bool diagnose = false) {
     PassReport rep;
     WindowEnumerationState winState = InspectWindows();
     rep.fullscreenGameDetected = winState.fullscreenForeignApp;
@@ -383,7 +402,7 @@ PassReport RunOptimizationPass(bool statusOnly, bool forceTrimVisible) {
         if (!qualifies) continue;
         if (rep.fullscreenGameDetected && sp.name == fgExeName && cnt == 1) continue;
 
-        if (!statusOnly && cnt >= 2) {
+        if ((!statusOnly || diagnose) && cnt >= 2) {
             HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, sp.pid);
             if (h) {
                 sp.role = ClassifySubprocessRole(h, cnt);
@@ -393,7 +412,7 @@ PassReport RunOptimizationPass(bool statusOnly, bool forceTrimVisible) {
         procs.push_back(sp);
     }
 
-    if (statusOnly || procs.empty()) {
+    if ((statusOnly && !diagnose) || procs.empty()) {
         for (const auto& sp : procs) {
             auto& a = rep.apps[sp.name];
             a.totalProcs++;
@@ -425,6 +444,41 @@ PassReport RunOptimizationPass(bool statusOnly, bool forceTrimVisible) {
             topForegroundRendererDelta = delta;
             topForegroundRendererPid = sp.pid;
         }
+    }
+
+        if (diagnose) {
+        // Read-only: report the decision each process would get, without changing any process state.
+        for (const auto& sp : procs) {
+            DiagRow r;
+            r.pid = sp.pid;
+            r.name = sp.name;
+            r.role = sp.role;
+            r.isForegroundApp = (sp.name == fgExeName);
+            bool fgWindow = (sp.pid == winState.fgPid);
+            if (g_excludedApps.count(sp.name)) {
+                r.protectedProc = true;
+                r.reason = L"PROTECTED: Excluded by user";
+            } else if (sp.role == SubprocRole::AudioOrNetwork) {
+                r.protectedProc = true;
+                r.reason = L"PROTECTED: AudioOrNetwork";
+            } else if (fgWindow) {
+                r.protectedProc = true;
+                r.reason = L"PROTECTED: Foreground window";
+            } else if (r.isForegroundApp && sp.role == SubprocRole::MainOrStandalone) {
+                r.protectedProc = true;
+                r.reason = L"PROTECTED: Foreground main process";
+            } else if (r.isForegroundApp && sp.role == SubprocRole::GpuCompositor) {
+                r.protectedProc = true;
+                r.reason = L"PROTECTED: Foreground GPU Compositor";
+            } else if (r.isForegroundApp && sp.pid == topForegroundRendererPid) {
+                r.protectedProc = true;
+                r.reason = L"PROTECTED: Foreground active renderer";
+            } else {
+                r.reason = std::wstring(L"ELIGIBLE: Background ") + RoleName(sp.role);
+            }
+            rep.diag.push_back(r);
+        }
+        return rep;
     }
 
     AcquireSRWLockExclusive(&g_histLock);
@@ -928,7 +982,7 @@ std::string JsonEscape(const std::string& in) {
     return out;
 }
 
-int RunCli(bool statusOnly, bool json) {
+int RunCli(bool statusOnly, bool json, bool diagnose = false) {
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!out || out == INVALID_HANDLE_VALUE) {
         if (AttachConsole(ATTACH_PARENT_PROCESS))
@@ -940,7 +994,20 @@ int RunCli(bool statusOnly, bool json) {
         WriteFile(out, s, (DWORD)strlen(s), &w, nullptr);
     };
 
-    PassReport rep = RunOptimizationPass(statusOnly, true);
+    PassReport rep = RunOptimizationPass(statusOnly, true, diagnose);
+
+        if (diagnose) {
+        char dl[320];
+        snprintf(dl, sizeof(dl), "%-8s %-28s %-18s %-4s %s\n", "PID", "Executable", "Role", "FG", "Decision");
+        print(dl);
+        for (const auto& r : rep.diag) {
+            snprintf(dl, sizeof(dl), "%-8lu %-28ls %-18ls %-4s %ls\n",
+                     (unsigned long)r.pid, r.name.c_str(), RoleName(r.role),
+                     r.isForegroundApp ? "yes" : "no", r.reason.c_str());
+            print(dl);
+        }
+        return 0;
+    }
 
     if (json) {
         MEMORYSTATUSEX ms{ sizeof(ms) };
@@ -1006,7 +1073,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
         if (HWND w = FindWindowW(L"TrimFlowTrayWnd", nullptr)) PostMessageW(w, WM_CLOSE, 0, 0);
         return 0;
     }
-        bool json = cmdLine && wcsstr(cmdLine, L"--json");
+        bool json = cmdLine && wcsstr(cmdLine, L"--json");    
+    if (cmdLine && wcsstr(cmdLine, L"--diagnose")) return RunCli(true, false, true);   
     if (cmdLine && wcsstr(cmdLine, L"--status")) return RunCli(true, json);
     if (cmdLine && wcsstr(cmdLine, L"--once")) return RunCli(false, json);
 
